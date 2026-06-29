@@ -73,12 +73,10 @@ class SAM2VideoTrainer(nn.Module):
             max_sprinkle_area=0,
         )
 
-        # Spatial dim for backbone feature maps
-        self._bb_feat_sizes = [
-            (256, 256),
-            (128, 128),
-            (64, 64),
-        ]
+        # Spatial dims are derived dynamically from the configured image size.
+        # The original helper was written for 1024 inputs, while MedSAM2 512
+        # configs produce 128/64/32 feature maps.
+        self._bb_feat_sizes = None
 
         self.sam_point_coords = torch.zeros(1, 1, 2, device=device)
         self.sam_point_labels = -torch.ones(1, 1, dtype=torch.int32, device=device)
@@ -264,6 +262,7 @@ class SAM2VideoTrainer(nn.Module):
         preprocessed_frame_features = []
         for frame_idx, frame_feature in enumerate(frame_features):
             feature_maps = frame_feature["backbone_fpn"][-self.num_feature_levels :]
+            feat_sizes = [x.shape[-2:] for x in feature_maps]
             # flatten NxCxHxW to HWxNxC
             vision_feats = [x.flatten(2).permute(2, 0, 1) for x in feature_maps]
             if (
@@ -274,7 +273,7 @@ class SAM2VideoTrainer(nn.Module):
             feats = [
                 feat.permute(1, 2, 0).view(batch_size, -1, *feat_size)
                 for feat, feat_size in zip(
-                    vision_feats[::-1], self._bb_feat_sizes[::-1]
+                    vision_feats[::-1], feat_sizes[::-1]
                 )
             ][::-1]
             _features = {
@@ -410,9 +409,10 @@ class SAM2VideoTrainer(nn.Module):
             )
         else:
             maskmem_features, maskmem_pos_enc = memory
+        prepared_maskmem_pos_enc = []
         for idx in range(len(maskmem_pos_enc)):
             rel_pos = len(maskmem_pos_enc) - idx
-            maskmem_pos_enc[idx] = (
+            prepared_maskmem_pos_enc.append(
                 maskmem_pos_enc[idx] + self.model.maskmem_tpos_enc[rel_pos - 1]
             )
         obj_ptrs = torch.stack(self.obj_ptrs, dim=0)
@@ -440,7 +440,7 @@ class SAM2VideoTrainer(nn.Module):
             obj_pos = obj_pos.repeat_interleave(C // self.model.mem_dim, dim=0)
         num_obj_ptr_tokens = obj_ptrs.shape[0]
         memory = torch.cat(maskmem_features + [obj_ptrs], dim=0)
-        memory_pos_embed = torch.cat(maskmem_pos_enc + [obj_pos], dim=0)
+        memory_pos_embed = torch.cat(prepared_maskmem_pos_enc + [obj_pos], dim=0)
         return memory, memory_pos_embed, num_obj_ptr_tokens
 
     def _predict_frame(self, features, memory, prev_mask=None):
