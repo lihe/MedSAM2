@@ -40,12 +40,12 @@ class SAM2DensePromptVideoTrainer(SAM2VideoTrainer):
         self.use_task_head = use_task_head
         self.use_boundary_head = use_boundary_head
 
-        hidden_dim = self.model.hidden_dim
+        self.fusion_channels = self._infer_fusion_channels()
         self.dense_prompt_adapter = DenseBoxPromptAdapter(
             in_channels=2,
-            out_channels=hidden_dim,
+            out_channels=self.fusion_channels,
         ).to(device=self.device)
-        self.gated_fusion = GatedFeatureFusion(channels=hidden_dim).to(
+        self.gated_fusion = GatedFeatureFusion(channels=self.fusion_channels).to(
             device=self.device
         )
         self.task_heads = TaskSpecificResidualHeads(
@@ -66,6 +66,36 @@ class SAM2DensePromptVideoTrainer(SAM2VideoTrainer):
                 f"{num_levels} feature levels"
             )
         return level
+
+    def _infer_fusion_channels(self) -> int:
+        image_size = int(self.model.image_size)
+        dummy = torch.zeros(
+            1,
+            3,
+            image_size,
+            image_size,
+            device=self.device,
+        )
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            with torch.inference_mode():
+                features = self.model.forward_image(dummy)
+        finally:
+            self.model.train(was_training)
+
+        backbone_fpn = features.get("backbone_fpn")
+        if not isinstance(backbone_fpn, list) or not backbone_fpn:
+            raise ValueError("self.model.forward_image(dummy) did not return backbone_fpn")
+        level = self._resolved_fusion_level(len(backbone_fpn))
+        image_feature = backbone_fpn[level]
+        if image_feature.ndim != 4:
+            raise ValueError(
+                "Selected fusion feature must have shape (N,C,H,W), "
+                f"got {tuple(image_feature.shape)}"
+            )
+        self.resolved_fusion_level = level
+        return int(image_feature.shape[1])
 
     def _apply_dense_prompt_fusion(
         self,
@@ -92,6 +122,12 @@ class SAM2DensePromptVideoTrainer(SAM2VideoTrainer):
         backbone_fpn = features["backbone_fpn"]
         level = self._resolved_fusion_level(len(backbone_fpn))
         image_feature = backbone_fpn[level]
+        if image_feature.shape[1] != self.fusion_channels:
+            raise ValueError(
+                "Selected fusion feature channel count does not match initialized "
+                f"dense prompt adapter: feature has {image_feature.shape[1]} channels, "
+                f"adapter expects {self.fusion_channels}"
+            )
         flat_prompts = dense_prompts.reshape(
             batch_size * num_frames,
             *dense_prompts.shape[2:],
