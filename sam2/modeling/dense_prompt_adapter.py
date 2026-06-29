@@ -49,7 +49,8 @@ class DenseBoxPromptAdapter(nn.Module):
             raise ValueError(
                 f"dense_prompts must have shape (N,C,H,W), got {tuple(dense_prompts.shape)}"
             )
-        prompt_feature = self.encoder(dense_prompts.float())
+        target_dtype = next(self.encoder.parameters()).dtype
+        prompt_feature = self.encoder(dense_prompts.to(dtype=target_dtype))
         if prompt_feature.shape[-2:] != target_size:
             prompt_feature = F.interpolate(
                 prompt_feature,
@@ -107,6 +108,8 @@ class TaskSpecificResidualHeads(nn.Module):
             raise ValueError(
                 f"task_ids length {task_ids.numel()} does not match batch {logits.shape[0]}"
             )
+        if bool(((task_ids < 0) | (task_ids >= len(self.heads))).any()):
+            raise ValueError(f"task_ids must be in [0, {len(self.heads) - 1}]")
         residual = torch.zeros_like(logits)
         for task_index, head in enumerate(self.heads):
             mask = task_ids == task_index
