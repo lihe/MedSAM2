@@ -394,8 +394,10 @@ class SAM2VideoTrainer(nn.Module):
         maskmem_features.append(maskmem_out["vision_features"])
         maskmem_pos_enc.append(maskmem_out["vision_pos_enc"])
         if len(maskmem_features) > self.memory_size:
-            self.maskmem_features = maskmem_features[-self.memory_size :]
-            self.maskmem_pos_enc = maskmem_pos_enc[-self.memory_size :]
+            maskmem_features = maskmem_features[-self.memory_size :]
+            maskmem_pos_enc = maskmem_pos_enc[-self.memory_size :]
+        self.maskmem_features = maskmem_features
+        self.maskmem_pos_enc = maskmem_pos_enc
         return maskmem_features, maskmem_pos_enc
 
     def _prepare_memory(self, memory):
